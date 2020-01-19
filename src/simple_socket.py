@@ -32,9 +32,9 @@ class SimpleSocket:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener = listener
         if self.listener:
-            self.bind_address_port = tuple(kwargs.get('bind_addr'), kwargs.get('bind_port'))
+            self.bind_address_port = (kwargs.get('bind_addr'), kwargs.get('bind_port'))
         else:
-            self.destination = tuple(kwargs.get('dest_addr'), kwargs.get('dest_port'))
+            self.destination = (kwargs.get('dest_addr'), kwargs.get('dest_port'))
 
     @check_listener
     def bind(self):
