@@ -30,11 +30,13 @@ def check_non_listener(f):
 class SimpleSocket:
     def __init__(self, listener=False, **kwargs):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.listener = listener
         if self.listener:
-            self.bind_address_port = (kwargs.get('bind_addr'), kwargs.get('bind_port'))
+            self.bind_address_port = (kwargs.get('bind_addr'), int(kwargs.get('bind_port')))
         else:
-            self.destination = (kwargs.get('dest_addr'), kwargs.get('dest_port'))
+            self.destination = (kwargs.get('dest_addr'), int(kwargs.get('dest_port')))
 
     @check_listener
     def bind(self):
