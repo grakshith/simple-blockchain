@@ -28,6 +28,7 @@ class Client:
         self.socket_list = [self.listener.socket]
         self.clients = []
         self.server_sock = None
+        self.queue_mutex = threading.Lock()
         with open(CONFIG_FILE, 'r') as f:
             for line in f:
                 line = line.strip()
@@ -90,7 +91,9 @@ class Client:
 
     def start_dme(self):
         logging.info("Starting Lamport's DME")
+        self.queue_mutex.acquire()
         self.queue.append((self.lclock.proc_id, 1)) # (proc_id, no. of grants/ack; 1 is ack from self) 
+        self.queue_mutex.release()
         logging.debug("Queue = {}".format(self.queue))
         self.lclock.update_time()
         message = struct.pack('3si',bytes("REQ","utf-8"), self.lclock.time)
@@ -101,11 +104,13 @@ class Client:
 
     def end_dme(self):
         logging.info("Ending Lamport's DME")
-        # reverse the steps of start_dme 
+        # reverse the steps of start_dme
+        self.queue_mutex.acquire() 
         for i in range(len(self.queue)):
             if(self.queue[i][0]==self.lclock.proc_id):
                 self.queue.remove(self.queue[i])
                 break
+        self.queue_mutex.release()
         logging.debug("Queue = {}".format(self.queue))
         self.lclock.update_time()
         message = struct.pack('3si', bytes("REL", "utf-8"), self.lclock.time)
@@ -122,7 +127,9 @@ class Client:
 
         if message_type == "REQ":
             logging.debug("REQ from {}".format(client))
+            self.queue_mutex.acquire()
             self.queue.append((client, None)) #TODO: This should be made more robust
+            self.queue_mutex.release()
             sock = self.outgoing_map[client]
             self.lclock.update_time()
             outgoing_message = struct.pack('3si', bytes("GRA", "utf-8"), self.lclock.time)
@@ -130,15 +137,19 @@ class Client:
             sock.send(bytes(outgoing_message))
         elif message_type == "GRA":
             # search for my request
+            self.queue_mutex.acquire()
             for i in range(len(self.queue)):
                 if(self.queue[i][0]==self.lclock.proc_id):
                     if(self.queue[i][1]==len(self.clients)+1):
                         continue
                     updated_tup = (self.lclock.proc_id, self.queue[i][1]+1)
                     self.queue[i] = updated_tup
+            self.queue_mutex.release()
         elif message_type == "REL":
             logging.debug("REL from {}".format(client))
+            self.queue_mutex.acquire()
             self.queue.remove((client, None))
+            self.queue_mutex.release()
         logging.debug("Queue = {}".format(self.queue))
 
     def transact(self, txn_type):
@@ -159,7 +170,7 @@ class Client:
             balance_msg = struct.pack('3siii', bytes("BAL", 'utf-8'), int(self.lclock.proc_id),0,0)
             self.server_sock.send(bytes(balance_msg))
             reply = self.server_sock.socket.recv(1024)
-            status_msg = struct.unpack('7si', reply)
+            status_msg = struct.unpack('7sf', reply)
             bal = status_msg[1]
             logging.info("Balance is {}".format(bal))
     
@@ -179,12 +190,15 @@ class Client:
                     # Start dme
                     self.start_dme()
                     # wait for GRA from everyone and check if I am at head
-                    for i in range(len(self.queue)):
-                        if(self.queue[i][0]==self.lclock.proc_id):
-                            break
                     while True:
+                        i=0
+                        self.queue_mutex.acquire()
+                        while self.queue[i][0]!=self.lclock.proc_id and i<len(self.queue):
+                            i+=1 
                         if(self.queue[i][1]==len(self.clients)+1 and self.queue[0][0]==self.lclock.proc_id):
+                            self.queue_mutex.release()
                             break
+                        self.queue_mutex.release()
                         time.sleep(1)
                     # Access server
                     self.transact(inp)

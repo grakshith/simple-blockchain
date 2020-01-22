@@ -66,7 +66,7 @@ class Server:
             data = {
                 'type': "INIT",
                 'src': 0,
-                'dest': client,
+                'dest': int(client),
                 'amt': 10.0
             }
             self.blockchain.append(data)
@@ -121,13 +121,13 @@ class Server:
             return
 
     def check_transaction_validity(self, message_tuple):
-        client_balance = {}
+        client_balance = {0:30.0}
         # Initialise initial balance
         for client in self.clients:
-            client_balance[client] = 10.0
+            client_balance[int(client)] = 0.0
         # iterate through the blockchain to see the balance of each client at the last block
         curr = self.blockchain.head
-        while curr.next:
+        while curr:
             data = curr.data
             src = data['src']
             dest = data['dest']
@@ -139,6 +139,7 @@ class Server:
         src = message_tuple[1]
         dest = message_tuple[2]
         amt = message_tuple[3]
+        logging.debug("Balance vector = {}".format(client_balance))
         if message_type == "BAL":
             return client_balance[message_tuple[1]]
         elif message_type == "TRA":
@@ -150,11 +151,12 @@ class Server:
     def handle_transaction(self, message, client):
         message_tuple = struct.unpack('3siii', message)
         message_type = message_tuple[0].decode('utf-8').strip()
-
+        logging.debug("Message tuple = {}".format(message_tuple))
         src = message_tuple[1]
         dest = message_tuple[2]
         amt = message_tuple[3]
         status = self.check_transaction_validity(message_tuple)
+        logging.debug("Transaction status: {}".format(status))
         if message_type == "TRA":
             if status == "VALID":
                 data = {
@@ -166,15 +168,15 @@ class Server:
                 self.blockchain.append(data)
                 status_msg = struct.pack('9s', bytes("SUCCESS", 'utf-8'))
                 logging.debug("Sending SUCCESS to {}".format(src))
-                self.outgoing_map[src].send(bytes(status_msg))
+                self.outgoing_map[str(src)].send(bytes(status_msg))
             else:
                 status_msg = struct.pack('9s', bytes("INCORRECT", 'utf-8'))
                 logging.debug("Sending INCORRECT to {}".format(src))
-                self.outgoing_map[src].send(bytes(status_msg))
+                self.outgoing_map[str(src)].send(bytes(status_msg))
         elif message_type == "BAL":
-            status_msg = struct.pack('7si', bytes("BALANCE", 'utf-8'), status)
+            status_msg = struct.pack('7sf', bytes("BALANCE", 'utf-8'), status)
             logging.debug("Sending balance to {}".format(src))
-            self.outgoing_map[src].send(bytes(status_msg))
+            self.outgoing_map[str(src)].send(bytes(status_msg))
 
 
 
