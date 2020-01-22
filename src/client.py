@@ -11,6 +11,7 @@ from lamport import LamportClock
 import time
 
 CONFIG_FILE = 'config.cfg'
+SERVER_PORT = 5535
 
 class Client:
     def __init__(self, port):
@@ -26,6 +27,7 @@ class Client:
         self.queue = deque()
         self.socket_list = [self.listener.socket]
         self.clients = []
+        self.server_sock = None
         with open(CONFIG_FILE, 'r') as f:
             for line in f:
                 line = line.strip()
@@ -34,6 +36,13 @@ class Client:
                     self.clients.append(line)
     
     def create_connections(self):
+        # server socket
+        self.server_sock = SimpleSocket(dest_addr=('0.0.0.0'), dest_port=SERVER_PORT)
+        self.server_sock.connect()
+        logging.info("Connected to Server on {}".format(self.server_sock.socket.getpeername()))
+        self.server_sock.send(bytes(str(self.listener.bind_address_port[1]), 'UTF-8'))
+
+        # client sockets
         for client in self.clients:
             sock = SimpleSocket(dest_addr=('0.0.0.0'), dest_port=client)
             self.outgoing_map[client] = sock
@@ -46,6 +55,7 @@ class Client:
             self.outgoing_map[client].socket.close()
             del(self.outgoing_map[client])
         self.listener.socket.close()
+        self.server_sock.socket.close()
 
     def handle_connections(self):
         try:
@@ -131,7 +141,27 @@ class Client:
             self.queue.remove((client, None))
         logging.debug("Queue = {}".format(self.queue))
 
-
+    def transact(self, txn_type):
+        if txn_type == "t":
+            print("$> dest = ", end='')
+            dest = input()
+            print("$> amt = ", end='')
+            amt = input()
+            transfer_msg = struct.pack('3siii', bytes("TRA", 'utf-8'), int(self.lclock.proc_id), int(dest.strip()), int(amt.strip()))
+            self.server_sock.send(bytes(transfer_msg))
+            reply = self.server_sock.socket.recv(1024)
+            status_msg = struct.unpack('9s', reply)
+            if(status_msg == "INCORRECT"):
+                logging.info("Transfer transaction failed")
+            elif (status_msg == "SUCCESS"):
+                logging.info("Transfer transaction successful")
+        elif txn_type == "b":
+            balance_msg = struct.pack('3siii', bytes("BAL", 'utf-8'), int(self.lclock.proc_id),0,0)
+            self.server_sock.send(bytes(balance_msg))
+            reply = self.server_sock.socket.recv(1024)
+            status_msg = struct.unpack('7si', reply)
+            bal = status_msg[1]
+            logging.info("Balance is {}".format(bal))
     
     def repl(self):
         print("To begin, press Enter")
@@ -145,16 +175,20 @@ class Client:
             while(True):
                 print("$> ", end='')
                 inp = input()
-                if(inp == "t"):
-                    # Transfer transaction
+                if(inp == "t" or inp == "b"):
+                    # Start dme
                     self.start_dme()
-                    # wait for GRA from everyone
+                    # wait for GRA from everyone and check if I am at head
+                    for i in range(len(self.queue)):
+                        if(self.queue[i][0]==self.lclock.proc_id):
+                            break
+                    while True:
+                        if(self.queue[i][1]==len(self.clients)+1 and self.queue[0][0]==self.lclock.proc_id):
+                            break
+                        time.sleep(1)
                     # Access server
+                    self.transact(inp)
                     # release DME
-                elif(inp == "b"):
-                    # Balance transaction
-                    pass
-                elif(inp == "r"):
                     self.end_dme()
                 else:
                     continue
