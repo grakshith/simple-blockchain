@@ -69,7 +69,7 @@ class Client:
                         logging.info("Accepted new connection from {}".format(addr))
                     else:
                         try:
-                            message = sock.recv(1024)
+                            message = sock.recv(8)
                             logging.debug("{} - {}".format(sock.getpeername(), message))
                             if re.match("[0-9]+", message.decode('utf-8').strip()):
                                 self.incoming_map[sock] = message.decode('utf-8').strip()
@@ -81,6 +81,10 @@ class Client:
                                 del(self.incoming_map[sock])
                             else:
                                 client = self.incoming_map[sock]
+                                # for i in range(len(message)):
+                                #     chunk = message[i:i+8]
+                                #     logging.debug("Chunk = {}, i={}, i+8={}, message={}".format(chunk,i,i+8, message))
+                                #     i = i+8
                                 self.handle_dme_message(message, client)
                         except Exception:
                             logging.exception("Error while trying to read from incoming sockets")
@@ -92,10 +96,10 @@ class Client:
     def start_dme(self):
         logging.info("Starting Lamport's DME")
         self.queue_mutex.acquire()
-        self.queue.append((self.lclock.proc_id, 1)) # (proc_id, no. of grants/ack; 1 is ack from self) 
+        self.lclock.update_time()
+        self.queue.append((self.lclock.proc_id, self.lclock.time, 1)) # (proc_id, no. of grants/ack; 1 is ack from self) 
         self.queue_mutex.release()
         logging.debug("Queue = {}".format(self.queue))
-        self.lclock.update_time()
         message = struct.pack('3si',bytes("REQ","utf-8"), self.lclock.time)
         for client in self.clients:
             outgoing_sock = self.outgoing_map[client]
@@ -110,9 +114,9 @@ class Client:
             if(self.queue[i][0]==self.lclock.proc_id):
                 self.queue.remove(self.queue[i])
                 break
+        self.lclock.update_time()
         self.queue_mutex.release()
         logging.debug("Queue = {}".format(self.queue))
-        self.lclock.update_time()
         message = struct.pack('3si', bytes("REL", "utf-8"), self.lclock.time)
         for client in self.clients:
             outgoing_sock = self.outgoing_map[client]
@@ -120,35 +124,43 @@ class Client:
             outgoing_sock.send(bytes(message))
 
     def handle_dme_message(self, message, client):
+        logging.debug("Message = {}".format(message))
         message_tuple = struct.unpack('3si', message)
         message_type = message_tuple[0].decode('utf-8').strip()
         remote_lclock = message_tuple[1]
+        self.queue_mutex.acquire()
         self.lclock.update_time(remote_lclock)
+        self.queue_mutex.release()
 
         if message_type == "REQ":
             logging.debug("REQ from {}".format(client))
             self.queue_mutex.acquire()
-            self.queue.append((client, None)) #TODO: This should be made more robust
+            self.queue.append((client, remote_lclock, None))
+            self.queue = sorted(self.queue, key=lambda x: (x[1], x[0]))
+            self.lclock.update_time()
             self.queue_mutex.release()
             sock = self.outgoing_map[client]
-            self.lclock.update_time()
             outgoing_message = struct.pack('3si', bytes("GRA", "utf-8"), self.lclock.time)
             logging.debug("Sending GRA to {}".format(client))
+            time.sleep(4)
             sock.send(bytes(outgoing_message))
         elif message_type == "GRA":
             # search for my request
             self.queue_mutex.acquire()
             for i in range(len(self.queue)):
                 if(self.queue[i][0]==self.lclock.proc_id):
-                    if(self.queue[i][1]==len(self.clients)+1):
+                    if(self.queue[i][2]==len(self.clients)+1):
                         continue
-                    updated_tup = (self.lclock.proc_id, self.queue[i][1]+1)
+                    updated_tup = (self.lclock.proc_id, self.queue[i][1], self.queue[i][2]+1)
                     self.queue[i] = updated_tup
             self.queue_mutex.release()
         elif message_type == "REL":
             logging.debug("REL from {}".format(client))
             self.queue_mutex.acquire()
-            self.queue.remove((client, None))
+            for i in range(len(self.queue)):
+                if(self.queue[i][0]==client):
+                    self.queue.remove(self.queue[i])
+                    break
             self.queue_mutex.release()
         logging.debug("Queue = {}".format(self.queue))
 
@@ -195,7 +207,7 @@ class Client:
                         self.queue_mutex.acquire()
                         while self.queue[i][0]!=self.lclock.proc_id and i<len(self.queue):
                             i+=1 
-                        if(self.queue[i][1]==len(self.clients)+1 and self.queue[0][0]==self.lclock.proc_id):
+                        if(self.queue[i][2]==len(self.clients)+1 and self.queue[0][0]==self.lclock.proc_id):
                             self.queue_mutex.release()
                             break
                         self.queue_mutex.release()
