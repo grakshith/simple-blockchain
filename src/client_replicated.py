@@ -50,17 +50,17 @@ class LinkedList:
 class TwoDTT:
     def __init__(self, clients, my_port):
         self.tt = []
-        self.my_row = my_port-8000
+        self.my_row = int(my_port)-8000
         self.row_len = len(clients) + 1
-        for _ in self.row_len:
-            tt.append([0 for _ in range(self.row_len)])
+        for _ in range(self.row_len):
+            self.tt.append([0 for _ in range(self.row_len)])
     
     def update_other_rows(self, twodtt):
         for i in range(self.row_len):
             if i == self.my_row:
                 continue
             for j in range(self.row_len):
-                tt[i][j] = max(tt[i][j], twodtt[i][j])
+                self.tt[i][j] = max(self.tt[i][j], twodtt[i][j])
     
     def update_my_row(self):
         max_val = 0
@@ -68,6 +68,17 @@ class TwoDTT:
             for i in range(self.row_len):
                 max_val = max(self.tt[i][j])
             self.tt[self.my_row] = max_val
+
+    def update_my_cell(self, lclock):
+        self.tt[self.my_row][self.my_row] = lclock
+
+    def unroll(self):
+        unrolled = []
+        for i in range(self.row_len):
+            for j in range(self.row_len):
+                unrolled.append(self.tt[i][j])
+        return unrolled
+
 
 
 class Client:
@@ -84,6 +95,7 @@ class Client:
         self.lclock = LamportClock(port)
         self.socket_list = [self.listener.socket]
         self.clients = []
+        self.balance = 10.0
         with open(CONFIG_FILE, 'r') as f:
             for line in f:
                 line = line.strip()
@@ -130,17 +142,53 @@ class Client:
                                 del(self.incoming_map[sock])
                             else:
                                 client = self.incoming_map[sock]
-                                # for i in range(len(message)):
-                                #     chunk = message[i:i+8]
-                                #     logging.debug("Chunk = {}, i={}, i+8={}, message={}".format(chunk,i,i+8, message))
-                                #     i = i+8
-                                self.handle_message(message, client)
+                                # message is the header
+                                length_tuple = struct.unpack('=chic',message)
+                                message_length = length_tuple[2]
+                                logging.debug("Message length = {}".format(message_length))
+                                blockchain = sock.recv(message_length)
+                                logging.debug("Partial blockchain = {} - {}".format(sock.getpeername(), message))
+                                serialized_tt = sock.recv(9*4)
+                                logging.debug("Serialized TT = {}".format(serialized_tt))
+                                tt = struct.unpack('9i', serialized_tt)
+                                reconstructed_tt = [[0,0,0],[0,0,0],[0,0,0]] # TODO: change this if possible
+                                for i in range(3):
+                                    for j in range(3):
+                                        reconstructed_tt[i][j] = tt[3*i+j]
+                                logging.debug("Reconstructed TT = {}".format(reconstructed_tt))
+                                self.handle_message(length_tuple[1], message, client, reconstructed_tt)
                         except Exception:
                             logging.exception("Error while trying to read from incoming sockets")
                 time.sleep(0.1)
         except Exception:
             logging.exception("Error")
             return
+
+    def handle_message(self, num_transactions, message, client, tt):
+        pass
+
+
+
+    def has_rec(self, node, recipient):
+        event_src = int(node['src'])-8000
+        recipient = int(recipient)-8000
+        if(self.time_table.tt[recipient][event_src]>=node['local_time']):
+            return True
+        return False
+
+    def find_subset_log(self, dest):
+        dest = int(dest)
+        curr = self.blockchain.head
+        subset = []
+        while curr:
+            if self.has_rec(curr.data, dest):
+                continue
+            else:
+                subset.append(curr.data)
+            curr = curr.next
+        return subset
+
+
 
     def repl(self):
         print("To begin, press Enter")
@@ -155,9 +203,42 @@ class Client:
                 print("$> ", end='')
                 inp = input()
                 if(inp == "t"):
-                    pass
+                    print("$> dest = ", end='')
+                    dest = input()
+                    print("$> amt = ", end='')
+                    amt = input()
+                    self.lclock.update_time()
+                    self.time_table.update_my_cell(self.lclock.time)
+                    data = {
+                        'type': "TRA",
+                        'src': int(self.lclock.proc_id),
+                        'dest': int(dest),
+                        'amt': int(amt),
+                        'local_time': self.lclock.time
+                    }
+                    self.blockchain.append(data)
+                    logging.info('Inserted into the local blockchain {}'.format(data))
                 elif(inp == "s"):
-                    pass
+                    print("$> dest = ", end='')
+                    dest = input()
+                    log_subset = self.find_subset_log(dest)
+                    # header structure
+                    # total 8 bytes - 4 bytes number of transactions + 4 bytes total size of the log
+                    header = struct.pack('=chic', bytes('H','utf-8'),len(log_subset), 16*len(log_subset),bytes('H', 'utf-8'))
+                    self.outgoing_map[dest].send(bytes(header))
+                    unrolled_list = []
+                    for item in log_subset:
+                        unrolled_list.append(item['src'])
+                        unrolled_list.append(item['dest'])
+                        unrolled_list.append(item['amt'])
+                        unrolled_list.append(item['local_time'])
+                    serialized_list = struct.pack('{}i'.format(len(unrolled_list)), *unrolled_list)
+                    self.outgoing_map[dest].send(bytes(serialized_list))
+                    unrolled_tt = self.time_table.unroll()
+                    serialized_tt = struct.pack('{}i'.format(len(unrolled_tt)), *unrolled_tt)
+                    self.outgoing_map[dest].send(bytes(serialized_tt))
+
+
                 else:
                     continue
         except KeyboardInterrupt:
