@@ -54,6 +54,7 @@ class TwoDTT:
         self.row_len = len(clients) + 1
         for _ in range(self.row_len):
             self.tt.append([0 for _ in range(self.row_len)])
+        logging.debug("Initialize TT = {}".format(self.tt))
     
     def update_other_rows(self, twodtt):
         for i in range(self.row_len):
@@ -61,13 +62,15 @@ class TwoDTT:
                 continue
             for j in range(self.row_len):
                 self.tt[i][j] = max(self.tt[i][j], twodtt[i][j])
+        logging.debug("Afer updating other rows = {}".format(self.tt))
     
     def update_my_row(self):
-        max_val = 0
         for j in range(self.row_len):
+            max_val = 0
             for i in range(self.row_len):
-                max_val = max(self.tt[i][j])
-            self.tt[self.my_row] = max_val
+                max_val = max(max_val,self.tt[i][j])
+            self.tt[self.my_row][j] = max_val
+        
 
     def update_my_cell(self, lclock):
         self.tt[self.my_row][self.my_row] = lclock
@@ -147,7 +150,8 @@ class Client:
                                 message_length = length_tuple[2]
                                 logging.debug("Message length = {}".format(message_length))
                                 blockchain = sock.recv(message_length)
-                                logging.debug("Partial blockchain = {} - {}".format(sock.getpeername(), message))
+                                logging.debug("Partial blockchain = {} - {}".format(sock.getpeername(), blockchain))
+                                unpacked_blockchain = struct.unpack('{}i'.format(message_length/4), blockchain)
                                 serialized_tt = sock.recv(9*4)
                                 logging.debug("Serialized TT = {}".format(serialized_tt))
                                 tt = struct.unpack('9i', serialized_tt)
@@ -156,7 +160,7 @@ class Client:
                                     for j in range(3):
                                         reconstructed_tt[i][j] = tt[3*i+j]
                                 logging.debug("Reconstructed TT = {}".format(reconstructed_tt))
-                                self.handle_message(length_tuple[1], message, client, reconstructed_tt)
+                                self.handle_message(length_tuple[1], unpacked_blockchain, client, reconstructed_tt)
                         except Exception:
                             logging.exception("Error while trying to read from incoming sockets")
                 time.sleep(0.1)
@@ -165,13 +169,34 @@ class Client:
             return
 
     def handle_message(self, num_transactions, message, client, tt):
-        pass
+        for i in range(num_transactions):
+            tx_type = 'TRA'
+            src = message[4*i]
+            dest = message[4*i+1]
+            amt = message[4*i+2]
+            local_time = message[4*i+3]
+            data = {
+                'type': tx_type,
+                'src': src,
+                'dest': dest,
+                'amt': amt,
+                'local_time': local_time
+            }
+            self.blockchain.append(data)
+            logging.debug("Appending to blockchain after receive = {}".format(data))
+        self.time_table.update_other_rows(tt)
+        self.time_table.update_my_row()
+        logging.debug("Updated TT = {}".format(self.time_table.tt))
+        
+
 
 
 
     def has_rec(self, node, recipient):
         event_src = int(node['src'])-8000
         recipient = int(recipient)-8000
+        logging.debug("HasRec")
+        logging.debug("Recepient = {}, Event_SRC = {}, Node Local Time = {}".format(recipient, event_src, node['local_time']))
         if(self.time_table.tt[recipient][event_src]>=node['local_time']):
             return True
         return False
@@ -206,9 +231,15 @@ class Client:
                     print("$> dest = ", end='')
                     dest = input()
                     print("$> amt = ", end='')
-                    amt = input()
+                    amt = int(input())
+                    if(amt>self.balance):
+                        logging.error("Amount greater than the available balance. Aborting transaction!")
+                        continue
+                    else:
+                        self.balance -= amt
                     self.lclock.update_time()
                     self.time_table.update_my_cell(self.lclock.time)
+                    logging.debug("Updated 2DTT = {}".format(self.time_table.tt))
                     data = {
                         'type': "TRA",
                         'src': int(self.lclock.proc_id),
