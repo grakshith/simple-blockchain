@@ -9,6 +9,8 @@ import struct
 from simple_socket import SimpleSocket
 from lamport import LamportClock
 import time
+import json
+import hashlib
 
 CONFIG_FILE = 'config.cfg'
 
@@ -99,6 +101,7 @@ class Client:
         self.socket_list = [self.listener.socket]
         self.clients = []
         self.balance = 10.0
+        self.bhash = []
         with open(CONFIG_FILE, 'r') as f:
             for line in f:
                 line = line.strip()
@@ -147,11 +150,14 @@ class Client:
                                 client = self.incoming_map[sock]
                                 # message is the header
                                 length_tuple = struct.unpack('=chic',message)
-                                message_length = length_tuple[2]
+                                message_length = int(length_tuple[2])
                                 logging.debug("Message length = {}".format(message_length))
                                 blockchain = sock.recv(message_length)
+                                logging.debug("Length of partial blockchain = {}".format(len(blockchain)))
                                 logging.debug("Partial blockchain = {} - {}".format(sock.getpeername(), blockchain))
-                                unpacked_blockchain = struct.unpack('{}i'.format(message_length/4), blockchain)
+                                struct_unpack_str = "{}i".format(int(message_length/4))
+                                logging.debug("type(message_length) = {}, {}".format(type(message_length), struct_unpack_str))
+                                unpacked_blockchain = struct.unpack(struct_unpack_str, blockchain)
                                 serialized_tt = sock.recv(9*4)
                                 logging.debug("Serialized TT = {}".format(serialized_tt))
                                 tt = struct.unpack('9i', serialized_tt)
@@ -182,8 +188,14 @@ class Client:
                 'amt': amt,
                 'local_time': local_time
             }
-            self.blockchain.append(data)
-            logging.debug("Appending to blockchain after receive = {}".format(data))
+            s = json.dumps(data).encode('utf-8')
+            dhash = hashlib.sha256(s).hexdigest()
+            if dhash not in self.bhash:
+                self.blockchain.append(data)
+                self.bhash.append(dhash)
+                if data['dest'] == int(self.lclock.proc_id):
+                    self.balance += data['amt']
+                logging.debug("Appending to blockchain after receive = {}".format(data))
         self.time_table.update_other_rows(tt)
         self.time_table.update_my_row()
         logging.debug("Updated TT = {}".format(self.time_table.tt))
@@ -206,12 +218,24 @@ class Client:
         curr = self.blockchain.head
         subset = []
         while curr:
-            if self.has_rec(curr.data, dest):
-                continue
-            else:
+            if not self.has_rec(curr.data, dest):
                 subset.append(curr.data)
             curr = curr.next
         return subset
+
+    def find_client_balance(self, client):
+        bal = 10
+        curr = self.blockchain.head
+        while curr:
+            src = curr.data['src']
+            dest = curr.data['dest']
+            if(src==int(client)):
+                bal -= curr.data['amt']
+            elif(dest==int(client)):
+                bal += curr.data['amt']
+            curr = curr.next
+        return bal
+    
 
 
 
@@ -248,6 +272,8 @@ class Client:
                         'local_time': self.lclock.time
                     }
                     self.blockchain.append(data)
+                    s = json.dumps(data).encode('utf-8')
+                    self.bhash.append(hashlib.sha256(s).hexdigest())
                     logging.info('Inserted into the local blockchain {}'.format(data))
                 elif(inp == "s"):
                     print("$> dest = ", end='')
@@ -264,12 +290,19 @@ class Client:
                         unrolled_list.append(item['amt'])
                         unrolled_list.append(item['local_time'])
                     serialized_list = struct.pack('{}i'.format(len(unrolled_list)), *unrolled_list)
+                    logging.debug("Sending struct with data = {}".format(serialized_list))
+                    logging.debug("Packed struct with format = {}".format('{}i'.format(len(unrolled_list))))
                     self.outgoing_map[dest].send(bytes(serialized_list))
                     unrolled_tt = self.time_table.unroll()
                     serialized_tt = struct.pack('{}i'.format(len(unrolled_tt)), *unrolled_tt)
                     self.outgoing_map[dest].send(bytes(serialized_tt))
-
-
+                elif(inp=="b"):
+                    node = input("$> node = ")
+                    if node == self.lclock.proc_id:
+                        logging.info("Current balance is {}".format(self.balance))
+                    else:
+                        bal = self.find_client_balance(node)
+                        logging.info("Node {}'s balance is {}".format(node, bal))
                 else:
                     continue
         except KeyboardInterrupt:
